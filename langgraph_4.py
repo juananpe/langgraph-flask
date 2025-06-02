@@ -18,7 +18,7 @@ from typing import TypedDict, Annotated, Literal
 from langchain_core.messages import HumanMessage, SystemMessage, AnyMessage
 from langgraph.graph import add_messages, StateGraph, END
 from langchain_openai import ChatOpenAI
-from langgraph.types import interrupt
+from langgraph.types import interrupt, Command
 from langgraph.checkpoint.memory import InMemorySaver
 
 class State(TypedDict):
@@ -123,21 +123,90 @@ print("=== Running Tweet Approval Agent with Interrupts ===")
 print("Note: This will pause at interrupt points and wait for human input")
 print("In a real application, you would handle these interrupts in your UI/API\n")
 
-try:
-    # Start the agent
-    for chunk in agent.graph.stream(
-        {"messages": [HumanMessage(content="Write a Twitter/X post on AI Agents and LangGraph")]},
-        config
-    ):
-        print("Chunk:", chunk)
-        print()
-        
-    print("\n=== Agent execution paused at interrupt ===")
-    print("To resume, you would call:")
-    print("agent.graph.invoke(Command(resume={'decision': 'yes'}), config)")
-    print("or")
-    print("agent.graph.invoke(Command(resume={'feedback': 'Make it more technical'}), config)")
+# Start the agent
+for chunk in agent.graph.stream(
+    {"messages": [HumanMessage(content="Write a Twitter/X post on AI Agents and LangGraph")]},
+    config
+):
+    print("Chunk:", chunk)
     
-except Exception as e:
-    print(f"Execution stopped at interrupt: {e}")
-    print("This is expected behavior - the agent is waiting for human input")
+    # Check if we hit an interrupt
+    if "__interrupt__" in chunk:
+        interrupt_info = chunk["__interrupt__"][0]
+        interrupt_data = interrupt_info.value
+        
+        print(f"\n=== INTERRUPT: {interrupt_data['message']} ===")
+        
+        if interrupt_data['type'] == 'approval_request':
+            # Get real human input for approval
+            user_input = input("Enter 'yes' to post or 'no' for feedback: ").strip().lower()
+            
+            if user_input == 'yes':
+                # Resume with approval
+                print("\n=== Resuming with approval ===")
+                for resume_chunk in agent.graph.stream(Command(resume={'decision': 'yes'}), config):
+                    print("Resume chunk:", resume_chunk)
+                break
+            else:
+                # Start feedback loop
+                print("\n=== Starting feedback loop ===")
+                current_config = config
+                
+                while True:
+                    # Resume with feedback request
+                    feedback_found = False
+                    for resume_chunk in agent.graph.stream(Command(resume={'decision': 'no'}), current_config):
+                        print("Resume chunk:", resume_chunk)
+                        
+                        # Check for feedback interrupt
+                        if "__interrupt__" in resume_chunk:
+                            feedback_interrupt = resume_chunk["__interrupt__"][0]
+                            feedback_data = feedback_interrupt.value
+                            
+                            if feedback_data['type'] == 'feedback_request':
+                                print(f"\n=== FEEDBACK REQUEST: {feedback_data['message']} ===")
+                                print(f"Current post: {feedback_data['current_post']}")
+                                
+                                # Get real human feedback
+                                feedback = input("Enter your feedback: ").strip()
+                                
+                                # Resume with feedback and continue the loop
+                                print(f"\n=== Applying feedback: {feedback} ===")
+                                
+                                # Process the feedback and wait for next approval
+                                approval_found = False
+                                for feedback_chunk in agent.graph.stream(Command(resume={'feedback': feedback}), current_config):
+                                    print("Feedback chunk:", feedback_chunk)
+                                    
+                                    # Check if we get another approval request
+                                    if "__interrupt__" in feedback_chunk:
+                                        approval_interrupt = feedback_chunk["__interrupt__"][0]
+                                        approval_data = approval_interrupt.value
+                                        
+                                        if approval_data['type'] == 'approval_request':
+                                            print(f"\n=== NEW APPROVAL REQUEST: {approval_data['message']} ===")
+                                            
+                                            # Ask for approval again
+                                            next_input = input("Enter 'yes' to post or 'no' for more feedback: ").strip().lower()
+                                            
+                                            if next_input == 'yes':
+                                                # Final approval - post it
+                                                print("\n=== Final approval - posting ===")
+                                                for post_chunk in agent.graph.stream(Command(resume={'decision': 'yes'}), current_config):
+                                                    print("Post chunk:", post_chunk)
+                                                approval_found = True
+                                                break
+                                            else:
+                                                # Continue feedback loop
+                                                print("\n=== Continuing feedback loop ===")
+                                                break
+                                
+                                if approval_found:
+                                    feedback_found = True
+                                    break
+                                    
+                    if feedback_found:
+                        break
+                break
+        
+print("\n=== Execution completed ===")
